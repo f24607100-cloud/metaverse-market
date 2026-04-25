@@ -1,0 +1,71 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function hasAll(keys) {
+      return request.resource.data.keys().hasAll(keys);
+    }
+
+    match /users/{userId} {
+      allow read, write: if isSelf(userId);
+    }
+
+    // Public product catalog; sellers can manage only their own listings
+    match /products/{productId} {
+      allow read: if true;
+      allow create: if signedIn()
+        && request.resource.data.sellerId == request.auth.uid
+        && hasAll(['sellerId'])
+        && request.resource.data.sellerId is string;
+
+      // Prevent changing ownership (`sellerId`) after creation.
+      allow update: if signedIn()
+        && resource.data.sellerId == request.auth.uid
+        && request.resource.data.sellerId == resource.data.sellerId;
+
+      allow delete: if signedIn()
+        && resource.data.sellerId == request.auth.uid;
+    }
+
+    // Customer orders: create only for yourself; read your own
+    match /orders/{orderId} {
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && hasAll(['userId', 'sellerIds'])
+        && request.resource.data.userId is string
+        && request.resource.data.sellerIds is list;
+
+      allow read: if signedIn()
+        && (
+          resource.data.userId == request.auth.uid
+          || (
+            resource.data.sellerIds is list
+            && request.auth.uid in resource.data.sellerIds
+          )
+        );
+
+      // Conservative updates: block changes to `userId` and `sellerIds`.
+      allow update: if signedIn()
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.sellerIds == resource.data.sellerIds
+        && (
+          resource.data.userId == request.auth.uid
+          || (resource.data.sellerIds is list && request.auth.uid in resource.data.sellerIds)
+        );
+
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
